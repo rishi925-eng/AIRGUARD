@@ -1,0 +1,227 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database with PostGIS
+  postgres:
+    image: postgis/postgis:15-3.3
+    container_name: airguard-postgres
+    environment:
+      POSTGRES_USER: airguard
+      POSTGRES_PASSWORD: airguard_dev_password
+      POSTGRES_DB: airguard
+      POSTGRES_INITDB_ARGS: "-E UTF8"
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./backend/database/init.sql:/docker-entrypoint-initdb.d/01-init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U airguard"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - airguard-network
+
+  # Redis Cache
+  redis:
+    image: redis:7-alpine
+    container_name: airguard-redis
+    command: redis-server --appendonly yes
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - airguard-network
+
+  # Backend API (FastAPI)
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: airguard-backend
+    environment:
+      # Database
+      DATABASE_URL: postgresql://airguard:airguard_dev_password@postgres:5432/airguard
+      REDIS_URL: redis://redis:6379
+      
+      # API Keys (use .env file for real values)
+      OPENAQ_API_KEY: ${OPENAQ_API_KEY:-demo_key}
+      NASA_FIRMS_API_KEY: ${NASA_FIRMS_API_KEY:-demo_key}
+      MAPBOX_TOKEN: ${MAPBOX_TOKEN:-demo_token}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-demo_key}
+      
+      # AWS Configuration
+      AWS_REGION: ${AWS_REGION:-us-east-1}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+      AWS_COGNITO_USER_POOL_ID: ${AWS_COGNITO_USER_POOL_ID:-}
+      AWS_COGNITO_CLIENT_ID: ${AWS_COGNITO_CLIENT_ID:-}
+      S3_BUCKET_NAME: ${S3_BUCKET_NAME:-airguard-dev}
+      
+      # Security
+      JWT_SECRET: ${JWT_SECRET:-dev_secret_change_in_production}
+      CORS_ORIGINS: http://localhost:3000,http://frontend:3000
+      
+      # Application
+      ENVIRONMENT: development
+      LOG_LEVEL: INFO
+      WORKERS: 4
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend/app:/app/app
+      - ./ml/models:/app/ml_models
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    networks:
+      - airguard-network
+    restart: unless-stopped
+
+  # Frontend (Next.js)
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: http://localhost:8000
+        NEXT_PUBLIC_MAPBOX_TOKEN: ${MAPBOX_TOKEN:-demo_token}
+    container_name: airguard-frontend
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:8000
+      NEXT_PUBLIC_MAPBOX_TOKEN: ${MAPBOX_TOKEN:-demo_token}
+      NEXT_PUBLIC_AWS_REGION: ${AWS_REGION:-us-east-1}
+      NEXT_PUBLIC_COGNITO_USER_POOL_ID: ${AWS_COGNITO_USER_POOL_ID:-}
+      NEXT_PUBLIC_COGNITO_CLIENT_ID: ${AWS_COGNITO_CLIENT_ID:-}
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./frontend/src:/app/src
+      - ./frontend/public:/app/public
+    depends_on:
+      - backend
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    networks:
+      - airguard-network
+    restart: unless-stopped
+
+  # Data Worker (Background Tasks)
+  worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: airguard-worker
+    command: python -m app.workers.data_collector
+    environment:
+      DATABASE_URL: postgresql://airguard:airguard_dev_password@postgres:5432/airguard
+      REDIS_URL: redis://redis:6379
+      OPENAQ_API_KEY: ${OPENAQ_API_KEY:-demo_key}
+      NASA_FIRMS_API_KEY: ${NASA_FIRMS_API_KEY:-demo_key}
+      LOG_LEVEL: INFO
+    volumes:
+      - ./backend/app:/app/app
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - airguard-network
+    restart: unless-stopped
+
+  # ML Training Service (Optional - for periodic retraining)
+  ml-trainer:
+    build:
+      context: ./ml
+      dockerfile: Dockerfile
+    container_name: airguard-ml-trainer
+    environment:
+      DATABASE_URL: postgresql://airguard:airguard_dev_password@postgres:5432/airguard
+      S3_BUCKET_NAME: ${S3_BUCKET_NAME:-airguard-dev}
+      AWS_REGION: ${AWS_REGION:-us-east-1}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+    volumes:
+      - ./ml:/app
+      - ml_models:/app/models
+    depends_on:
+      - postgres
+    networks:
+      - airguard-network
+    profiles:
+      - ml-training
+    restart: "no"
+
+  # AI Agent Orchestrator
+  ai-orchestrator:
+    build:
+      context: ./ai
+      dockerfile: Dockerfile
+    container_name: airguard-ai-orchestrator
+    environment:
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-demo_key}
+      API_BASE_URL: http://backend:8000
+      REDIS_URL: redis://redis:6379
+      LOG_LEVEL: INFO
+    ports:
+      - "8001:8001"
+    volumes:
+      - ./ai:/app
+    depends_on:
+      - backend
+      - redis
+    networks:
+      - airguard-network
+    restart: unless-stopped
+
+  # Nginx (Optional - for production-like setup)
+  nginx:
+    image: nginx:alpine
+    container_name: airguard-nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./infrastructure/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./infrastructure/nginx/ssl:/etc/nginx/ssl:ro
+    depends_on:
+      - frontend
+      - backend
+    networks:
+      - airguard-network
+    profiles:
+      - production
+    restart: unless-stopped
+
+networks:
+  airguard-network:
+    driver: bridge
+    name: airguard-network
+
+volumes:
+  postgres_data:
+    name: airguard-postgres-data
+  redis_data:
+    name: airguard-redis-data
+  ml_models:
+    name: airguard-ml-models

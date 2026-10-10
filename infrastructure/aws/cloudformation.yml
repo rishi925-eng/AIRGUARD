@@ -1,0 +1,185 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'AIRGUARD - Real-Time Air Quality Intelligence, ML Prediction & Multi-Agent Platform'
+
+Parameters:
+  Environment:
+    Type: String
+    Default: 'production'
+    AllowedValues: ['development', 'staging', 'production']
+  DBPassword:
+    Type: String
+    NoEcho: true
+    Description: 'PostgreSQL PostGIS Master Password'
+    MinLength: 8
+
+Resources:
+  # ==========================================
+  # 1. NETWORKING & SECURITY
+  # ==========================================
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: '10.0.0.0/16'
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      Tags:
+        - Key: Name
+          Value: !Sub 'airguard-vpc-${Environment}'
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Sub 'airguard-igw-${Environment}'
+
+  VPCGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref InternetGateway
+
+  # ==========================================
+  # 2. S3 STORAGE (Data Lake & Artifacts)
+  # ==========================================
+  AirguardS3Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub 'airguard-lake-${AWS::AccountId}-${Environment}'
+      VersioningConfiguration:
+        Status: Enabled
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+
+  # ==========================================
+  # 3. AMAZON RDS (PostgreSQL + PostGIS)
+  # ==========================================
+  DBSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: 'AIRGUARD Subnets for PostGIS'
+      SubnetIds:
+        - !Ref PublicSubnet1
+        - !Ref PublicSubnet2
+
+  RDSInstance:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      DBInstanceIdentifier: !Sub 'airguard-db-${Environment}'
+      AllocatedStorage: '50'
+      DBInstanceClass: 'db.t3.medium'
+      Engine: 'postgres'
+      EngineVersion: '15.4'
+      MasterUsername: 'airguard_admin'
+      MasterUserPassword: !Ref DBPassword
+      DBName: 'airguard'
+      DBSubnetGroupName: !Ref DBSubnetGroup
+      VPCSecurityGroups:
+        - !Ref DBSecurityGroup
+      PubliclyAccessible: true
+      StorageEncrypted: true
+
+  # ==========================================
+  # 4. AMAZON COGNITO (Authentication & RBAC)
+  # ==========================================
+  UserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: !Sub 'airguard-users-${Environment}'
+      AutoVerifiedAttributes:
+        - email
+      UsernameAttributes:
+        - email
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 8
+          RequireLowercase: true
+          RequireNumbers: true
+          RequireSymbols: true
+
+  UserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      ClientName: 'airguard-web-client'
+      UserPoolId: !Ref UserPool
+      GenerateSecret: false
+      ExplicitAuthFlows:
+        - ALLOW_USER_PASSWORD_AUTH
+        - ALLOW_REFRESH_TOKEN_AUTH
+        - ALLOW_USER_SRP_AUTH
+
+  # ==========================================
+  # 5. AWS SNS (Proactive Predictive Alerts)
+  # ==========================================
+  AirguardAlertTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub 'airguard-predictive-alerts-${Environment}'
+      DisplayName: 'AIRGUARD Air Quality Alerts'
+
+  # ==========================================
+  # 6. EVENTBRIDGE & LAMBDA DATA INGESTION
+  # ==========================================
+  IngestionScheduleRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub 'airguard-ingestion-cron-${Environment}'
+      Description: 'Triggers real-time OpenAQ, Open-Meteo & NASA FIRMS fetchers every 15 minutes'
+      ScheduleExpression: 'rate(15 minutes)'
+      State: 'ENABLED'
+
+  # ==========================================
+  # 7. AWS IoT Core (ESP32 Sentinel Gateways)
+  # ==========================================
+  IoTPolicy:
+    Type: AWS::IoT::Policy
+    Properties:
+      PolicyName: !Sub 'airguard-esp32-policy-${Environment}'
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action: ['iot:Connect', 'iot:Publish', 'iot:Subscribe', 'iot:Receive']
+            Resource: '*'
+
+  # Subnets & Security Groups Placeholders
+  PublicSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: '10.0.1.0/24'
+      AvailabilityZone: !Select [0, !GetAZs '']
+
+  PublicSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: '10.0.2.0/24'
+      AvailabilityZone: !Select [1, !GetAZs '']
+
+  DBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: 'Allow inbound DB access'
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 5432
+          ToPort: 5432
+          CidrIp: '0.0.0.0/0'
+
+Outputs:
+  UserPoolId:
+    Value: !Ref UserPool
+    Description: 'Cognito User Pool ID'
+  S3DataLakeBucket:
+    Value: !Ref AirguardS3Bucket
+    Description: 'S3 Data Lake Bucket Name'
+  SNSTopicArn:
+    Value: !Ref AirguardAlertTopic
+    Description: 'SNS Predictive Alert Topic ARN'
+  RDSEndpoint:
+    Value: !GetAtt RDSInstance.Endpoint.Address
+    Description: 'PostgreSQL PostGIS Endpoint'

@@ -1,0 +1,64 @@
+{
+  "name": "airguard-monorepo",
+  "version": "1.0.0",
+  "description": "Advanced Air Quality Intelligence System",
+  "private": true,
+  "scripts": {
+    "dev": "concurrently \"npm run dev:backend\" \"npm run dev:frontend\"",
+    "dev:backend": "cd backend && ..\\.venv\\Scripts\\python.exe -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8000",
+    "dev:frontend": "cd frontend && npm run dev",
+    "build": "npm run build:frontend",
+    "build:frontend": "cd frontend && npm run build",
+    "start": "npm run start:frontend",
+    "start:frontend": "cd frontend && npm run start",
+    "test": "npm run test:backend && npm run test:frontend",
+    "test:backend": "cd backend && pytest",
+    "test:frontend": "cd frontend && npm run test",
+    "lint": "npm run lint:frontend",
+    "lint:frontend": "cd frontend && npm run lint",
+    "docker:up": "docker-compose up -d",
+    "docker:down": "docker-compose down",
+    "docker:build": "docker-compose build",
+    "docker:logs": "docker-compose logs -f",
+    "setup": "npm run setup:frontend && npm run setup:backend",
+    "setup:frontend": "cd frontend && npm install",
+    "setup:backend": "cd backend && pip install -r requirements.txt",
+    "setup:ai": "cd ai && pip install -r requirements.txt",
+    "setup:ml": "cd ml && pip install -r requirements.txt",
+    "db:init": "docker-compose exec postgres psql -U airguard -d airguard -f /docker-entrypoint-initdb.d/01-init.sql",
+    "db:migrate": "cd backend && alembic upgrade head",
+    "db:reset": "docker-compose down -v && docker-compose up -d postgres && sleep 10 && npm run db:init",
+    "ml:train": "cd ml && python scripts/train_model.py",
+    "ai:start": "cd ai && python orchestrator.py",
+    "clean": "npm run clean:frontend && npm run clean:backend",
+    "clean:frontend": "cd frontend && rm -rf .next node_modules",
+    "clean:backend": "cd backend && find . -type d -name __pycache__ -exec rm -rf {} + && rm -rf .pytest_cache",
+    "deploy:aws": "cd infrastructure && ./deploy.sh",
+    "iot:flash": "cd iot && arduino-cli upload -p $PORT --fqbn esp32:esp32:esp32 indoor_sensor"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  },
+  "engines": {
+    "node": ">=18.0.0",
+    "npm": ">=9.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/yourusername/airguard.git"
+  },
+  "keywords": [
+    "air-quality",
+    "aqi",
+    "pollution",
+    "health",
+    "monitoring",
+    "forecasting",
+    "machine-learning",
+    "iot",
+    "nextjs",
+    "fastapi"
+  ],
+  "author": "AIRGUARD Team",
+  "license": "MIT"
+}

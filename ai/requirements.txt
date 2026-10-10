@@ -1,0 +1,12 @@
+# AI Agent System Requirements
+openai==1.6.1
+anthropic==0.8.1
+langchain==0.1.0
+langchain-openai==0.0.2
+httpx==0.25.2
+python-dotenv==1.0.0
+pydantic==2.5.2
+redis==5.0.1
+
+# Strands framework (if available, or custom implementation)
+# strands-ai==0.1.0
